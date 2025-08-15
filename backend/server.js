@@ -1,4 +1,3 @@
-// backend/server.js
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -10,31 +9,48 @@ const jwt = require('jsonwebtoken');
 
 const app = express();
 
-/* -------- Core middleware -------- */
-app.use(cors()); // ok for localhost dev
+/* -------------------------------- Core middleware -------------------------------- */
+app.use(cors()); // ok for localhost dev; tighten later for prod
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-/* -------- MySQL (dev: single connection) -------- */
-const db = mysql.createConnection({
+/* ---------------------------- MySQL pool + startup retry --------------------------- */
+const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASS || '',
   database: process.env.DB_NAME || 'kodakbank',
-});
-db.connect((err) => {
-  if (err) console.error('❌ MySQL connection failed:', err.message);
-  else console.log('✅ Connected to MySQL');
-});
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+};
 
-/* -------- JWT helpers -------- */
+// Use a pool for resilience under Docker and to avoid single-connection issues
+const db = mysql.createPool(dbConfig);
+
+function testDbConnection(attempt = 1) {
+  db.getConnection((err, conn) => {
+    if (err) {
+      console.error(`❌ MySQL connect attempt ${attempt} failed:`, err.code || err.message);
+      if (attempt < 30) setTimeout(() => testDbConnection(attempt + 1), 1000);
+      return;
+    }
+    console.log('✅ Connected to MySQL');
+    conn.release();
+  });
+}
+
+testDbConnection();
+
+/* ---------------------------------- JWT helpers ---------------------------------- */
 const JWT_SECRET = process.env.JWT_SECRET || 'dev_secret_change_me';
 const TOKEN_NAME = 'kb_token';
 
 function signToken(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '2h' });
 }
+
 function requireAuth(req, res, next) {
   const token = req.cookies?.[TOKEN_NAME];
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
@@ -46,12 +62,12 @@ function requireAuth(req, res, next) {
   }
 }
 
-/* -------- Health check -------- */
+/* ---------------------------------- Healthcheck ---------------------------------- */
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, service: 'backend', time: new Date().toISOString() });
 });
 
-/* -------- Auth: Signup -------- */
+/* ------------------------------------- Auth -------------------------------------- */
 app.post('/api/signup', async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'Email & password required' });
@@ -73,7 +89,6 @@ app.post('/api/signup', async (req, res) => {
   }
 });
 
-/* -------- Auth: Login (sets http-only cookie) -------- */
 app.post('/api/login', (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ error: 'Email & password required' });
@@ -90,63 +105,55 @@ app.post('/api/login', (req, res) => {
     const ok = await bcrypt.compare(password, user.password_hash);
     if (!ok) return res.status(400).json({ error: 'Invalid email or password' });
 
-    // Create JWT + set cookie
     const token = signToken({ id: user.id, email: user.email });
     res.cookie(TOKEN_NAME, token, {
       httpOnly: true,
-      sameSite: 'lax',   // fine for localhost
-      secure: false,     // set true behind HTTPS in prod
+      sameSite: 'lax', // set 'strict' in prod if possible
+      secure: false,   // true behind HTTPS
       maxAge: 2 * 60 * 60 * 1000, // 2h
     });
     res.json({ success: true, message: 'Login successful' });
   });
 });
 
-/* -------- Me / Logout -------- */
 app.get('/api/me', requireAuth, (req, res) => {
   res.json({ id: req.user.id, email: req.user.email });
 });
+
 app.post('/api/logout', (_req, res) => {
   res.clearCookie(TOKEN_NAME, { httpOnly: true, sameSite: 'lax', secure: false });
   res.json({ success: true });
 });
 
-/* -------- Protect dashboard HTML BEFORE static -------- */
+/* ------------------------ Protect dashboard BEFORE static ------------------------ */
 app.get('/dashboard.html', requireAuth, (_req, res) => {
   res.sendFile(path.join(__dirname, '..', 'frontend', 'dashboard.html'));
 });
 
-/* -------- Static hosting (login.html, signup.html, css, etc.) -------- */
+/* ------------------------- Serve static (login/signup/etc) ------------------------ */
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
 
-/* -------- REAL dashboard APIs (from MySQL) -------- */
-
-// BALANCE from DB (for the logged-in user)
+/* ------------------------------ REAL dashboard APIs ------------------------------ */
 app.get('/api/balance', requireAuth, (req, res) => {
   const userId = req.user.id;
-  db.query(
-    'SELECT balance FROM accounts WHERE user_id = ? LIMIT 1',
-    [userId],
-    (err, rows) => {
-      if (err) {
-        console.error('Balance DB error:', err);
-        return res.status(500).json({ error: 'Database error' });
-      }
-      const balance = rows && rows.length ? Number(rows[0].balance) : 0;
-      res.json({ balance });
+  db.query('SELECT balance FROM accounts WHERE user_id = ? LIMIT 1', [userId], (err, rows) => {
+    if (err) {
+      console.error('Balance DB error:', err);
+      return res.status(500).json({ error: 'Database error' });
     }
-  );
+    const balance = rows && rows.length ? Number(rows[0].balance) : 0;
+    res.json({ balance });
+  });
 });
 
-// TRANSACTIONS from DB (latest first, limit 20)
 app.get('/api/transactions', requireAuth, (req, res) => {
   const userId = req.user.id;
   db.query(
     `SELECT t_date AS date, description, amount
-     FROM transactions
-     WHERE user_id = ?
-     ORDER BY t_date DESC, id DESC
-     LIMIT 20`,
+       FROM transactions
+      WHERE user_id = ?
+      ORDER BY t_date DESC, id DESC
+      LIMIT 20`,
     [userId],
     (err, rows) => {
       if (err) {
@@ -158,10 +165,10 @@ app.get('/api/transactions', requireAuth, (req, res) => {
   );
 });
 
-/* -------- Default root -> login -------- */
+/* ------------------------------------ Root --------------------------------------- */
 app.get('/', (_req, res) => res.redirect('/login.html'));
 
-/* -------- Start server -------- */
+/* ------------------------------------ Start -------------------------------------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Backend running on http://localhost:${PORT}`);

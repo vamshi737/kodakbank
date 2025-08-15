@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASS}
+      MYSQL_DATABASE: ${DB_NAME}
+    # change host port if 3306 is busy on Windows, e.g. 3307:3306 (or remove this block entirely)
+    ports:
+      - "3307:3306"
+    volumes:
+      - dbdata:/var/lib/mysql
+      - ./mysql-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${DB_PASS}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: ${PORT}
+      DB_HOST: db
+      DB_USER: root
+      DB_PASS: ${DB_PASS}
+      DB_NAME: ${DB_NAME}
+      JWT_SECRET: ${JWT_SECRET}
+      # make sure corporate/system proxies don't affect container-to-container DNS/TCP
+      NO_PROXY: "localhost,127.0.0.1,db"
+      no_proxy: "localhost,127.0.0.1,db"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+    # wait until the DB is actually reachable on 3306 before starting Node
+    command: >-
+      sh -lc 'echo "waiting for db:3306";
+              until getent hosts db && nc -z db 3306; do sleep 1; done;
+              echo "db is up — starting server";
+              node server.js'
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/frontend:ro
+    restart: unless-stopped
+
+volumes:
+  dbdata:

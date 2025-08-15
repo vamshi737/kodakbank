@@ -1,0 +1,13 @@
+# keep Docker build context small
+node_modules
+npm-debug.log
+dist
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+**/.DS_Store
+**/Thumbs.db
+
+# never send secrets to docker build
+.env
