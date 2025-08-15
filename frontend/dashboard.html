@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>KodakBank — Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Optional light polish if styles.css is empty */
+    body { font-family: system-ui, Segoe UI, Arial, sans-serif; max-width: 960px; margin: 40px auto; padding: 0 16px; }
+    h2 { margin-bottom: 8px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+    th { background: #f9fafb; }
+    .muted { color:#6b7280; }
+    .error { color:#b91c1c; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; }
+    .btn { padding:8px 12px; border:0; border-radius:8px; background:#2563eb; color:#fff; cursor:pointer; }
+    .btn:hover { filter:brightness(.95); }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <h2 id="welcomeTitle">Welcome to Your Dashboard</h2>
+    <button id="logoutBtn" class="btn">Logout</button>
+  </div>
+
+  <p><strong>Balance:</strong> <span id="balance" class="muted">Loading…</span></p>
+  <p id="balanceErr" class="error" style="display:none;"></p>
+
+  <h3>Recent Transactions</h3>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:140px;">Date</th>
+        <th>Description</th>
+        <th style="width:160px;">Amount</th>
+      </tr>
+    </thead>
+    <tbody id="transactions">
+      <tr><td colspan="3" class="muted">Loading…</td></tr>
+    </tbody>
+  </table>
+  <p id="txErr" class="error" style="display:none;"></p>
+
+  <script>
+    // --- Auth gate: if not logged in, bounce to login ---
+    (async () => {
+      const meRes = await fetch('/api/me', { cache: 'no-store' });
+      if (!meRes.ok) {
+        location.href = '/login.html';
+        return;
+      }
+      const me = await meRes.json();
+      // Optional greeting with email
+      const title = document.getElementById('welcomeTitle');
+      title.textContent = `Welcome to Your Dashboard`;
+      // If you want email in title:  title.textContent = `Welcome, ${me.email}`;
+      loadData();
+    })();
+
+    // Helper: currency format
+    const fmt = new Intl.NumberFormat(undefined, { style: 'currency', currency: 'USD' });
+
+    async function loadData() {
+      await Promise.all([loadBalance(), loadTransactions()]);
+    }
+
+    async function loadBalance() {
+      const balEl = document.getElementById('balance');
+      const errEl = document.getElementById('balanceErr');
+      try {
+        const res = await fetch('/api/balance', { cache: 'no-store' });
+        if (!res.ok) throw new Error('Failed to load balance');
+        const data = await res.json();
+        balEl.textContent = fmt.format(Number(data.balance || 0));
+        errEl.style.display = 'none';
+      } catch (e) {
+        balEl.textContent = '—';
+        errEl.textContent = e.message || 'Unable to load balance';
+        errEl.style.display = '';
+      }
+    }
+
+    async function loadTransactions() {
+      const tbody = document.getElementById('transactions');
+      const errEl = document.getElementById('txErr');
+      try {
+        const res = await fetch('/api/transactions', { cache: 'no-store' });
+        if (!res.ok) throw new Error('Failed to load transactions');
+        const data = await res.json();
+        const list = Array.isArray(data.transactions) ? data.transactions : [];
+        if (!list.length) {
+          tbody.innerHTML = '<tr><td colspan="3" class="muted">No transactions yet.</td></tr>';
+        } else {
+          tbody.innerHTML = list.map(tx => `
+            <tr>
+              <td>${tx.date ?? ''}</td>
+              <td>${tx.description ?? ''}</td>
+              <td>${fmt.format(Number(tx.amount || 0))}</td>
+            </tr>
+          `).join('');
+        }
+        errEl.style.display = 'none';
+      } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="3" class="muted">—</td></tr>';
+        errEl.textContent = e.message || 'Unable to load transactions';
+        errEl.style.display = '';
+      }
+    }
+
+    // Logout: clear cookie on server, then go to login
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      await fetch('/api/logout', { method: 'POST' });
+      window.location.href = '/login.html';
+    });
+  </script>
+</body>
+</html>

@@ -21,8 +21,11 @@
     .link{font-size:14px;color:#2563eb;text-decoration:none}
     .link:hover{text-decoration:underline}
     .btn{margin-top:16px;width:100%;padding:12px 14px;border:0;border-radius:10px;background:#2563eb;color:#fff;font-weight:600;cursor:pointer}
+    .btn[disabled]{opacity:.7;cursor:not-allowed}
     .btn:hover{filter:brightness(.95)}
     .msg{min-height:18px;margin-top:10px;font-size:14px}
+    .msg.error{color:#b91c1c}
+    .msg.success{color:#065f46}
     .small{margin-top:10px;color:#6b7280;font-size:14px}
   </style>
 </head>
@@ -32,11 +35,12 @@
       <h1>Welcome Back!</h1>
       <p class="sub">Please sign in to continue</p>
 
-      <form id="loginForm" autocomplete="on">
-        <label>Email or Username</label>
-        <input type="email" id="loginEmail" placeholder="Enter your email here" required />
+      <!-- no action attribute; we handle submit via JS -->
+      <form id="loginForm" autocomplete="on" novalidate>
+        <label for="loginEmail">Email</label>
+        <input type="email" id="loginEmail" placeholder="you@example.com" required />
 
-        <label>Password</label>
+        <label for="loginPassword">Password</label>
         <div class="pwd">
           <input type="password" id="loginPassword" placeholder="••••••••" required />
           <button type="button" id="togglePwd" aria-label="Show password">👁️</button>
@@ -47,8 +51,8 @@
           <a href="#" class="link" id="forgotLink">Forgot Password?</a>
         </div>
 
-        <button class="btn" type="submit">Sign in</button>
-        <p id="loginMsg" class="msg"></p>
+        <button class="btn" type="submit" id="loginBtn">Sign in</button>
+        <p id="loginMsg" class="msg" role="status" aria-live="polite"></p>
 
         <p class="small">
           Don’t have an account?
@@ -59,38 +63,59 @@
   </main>
 
   <script>
-    // show/hide password
-    document.getElementById('togglePwd').addEventListener('click', () => {
-      const i = document.getElementById('loginPassword');
+    // ---- UI helpers ----
+    const $ = (id) => document.getElementById(id);
+    const emailInput = $('loginEmail');
+    const passwordInput = $('loginPassword');
+    const remember = $('rememberMe');
+    const loginForm = $('loginForm');
+    const loginBtn = $('loginBtn');
+    const msg = $('loginMsg');
+
+    // Show/hide password
+    $('togglePwd').addEventListener('click', () => {
+      const i = passwordInput;
       i.type = i.type === 'password' ? 'text' : 'password';
     });
 
-    // remember me (store email only)
-    const emailInput = document.getElementById('loginEmail');
-    const remember = document.getElementById('rememberMe');
+    // Remember me (store email only)
     const KEY = 'kb_email';
     emailInput.value = localStorage.getItem(KEY) || '';
     remember.checked = !!emailInput.value;
-    const sync = () => {
-      if (remember.checked) localStorage.setItem(KEY, emailInput.value.trim());
+    function syncRemember() {
+      if (remember.checked) localStorage.setItem(KEY, (emailInput.value || '').trim());
       else localStorage.removeItem(KEY);
-    };
-    remember.addEventListener('change', sync);
-    emailInput.addEventListener('input', sync);
+    }
+    remember.addEventListener('change', syncRemember);
+    emailInput.addEventListener('input', syncRemember);
 
-    // forgot (placeholder)
-    document.getElementById('forgotLink').addEventListener('click', (e) => {
+    // Forgot (placeholder)
+    $('forgotLink').addEventListener('click', (e) => {
       e.preventDefault();
       alert('Forgot Password flow will be added later.');
     });
 
-    // submit -> POST /api/login
-    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    // Set message text + style
+    function setMsg(text, type = '') {
+      msg.className = 'msg ' + (type || '');
+      msg.textContent = text;
+    }
+
+    // ---- Submit -> POST /api/login ----
+    loginForm.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const email = emailInput.value.trim();
-      const password = document.getElementById('loginPassword').value;
-      const msg = document.getElementById('loginMsg');
-      msg.textContent = 'Checking…';
+
+      const email = (emailInput.value || '').trim();
+      const password = passwordInput.value || '';
+
+      // basic front-end validation
+      if (!email || !password) {
+        setMsg('Email and password are required.', 'error');
+        return;
+      }
+
+      setMsg('Checking…');
+      loginBtn.disabled = true;
 
       try {
         const res = await fetch('/api/login', {
@@ -98,12 +123,19 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, password })
         });
+
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Login failed');
-        msg.textContent = data.message || 'Login successful';
-        // TODO: redirect to dashboard.html later
+        if (!res.ok || !data.success) {
+          throw new Error(data.error || 'Login failed');
+        }
+
+        // ✅ Redirect to dashboard after a brief success message
+        setMsg('Login successful. Redirecting…', 'success');
+        window.location.href = '/dashboard.html';
       } catch (err) {
-        msg.textContent = err.message;
+        setMsg(err.message || 'Something went wrong', 'error');
+      } finally {
+        loginBtn.disabled = false;
       }
     });
   </script>
